@@ -158,8 +158,8 @@ main = do
       let op1 = runPrgm p initS Seq.empty
       let (v Seq.:<| _) = op1
       putStrLn $ "Part 1: " ++ show v
-      let op2 = runPrgms p (St (Map.fromList [('p', 0)]) 0 Seq.empty Seq.empty 0)
-                           (St (Map.fromList [('p', 1)]) 0 Seq.empty Seq.empty 0)
+      let op2 = runPrgms p (initS & env .~ Map.singleton 'p' 0)
+                           (initS & env .~ Map.singleton 'p' 1)
       putStrLn $ "Part 2: " ++ show (op2 ^. _3 ^. sc)
     Left e -> putStrLn $ "Error: " ++ show e
     where
