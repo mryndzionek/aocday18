@@ -103,15 +103,20 @@ eval_ v = case v of
 set_ :: Reg -> Var -> State St ()
 set_ r v = eval_ v >>= modify . over env . Map.insert r
 
-process :: Cmd -> State St ()
+process :: Cmd -> State St Bool
 process c = case c of
-  Set r v  -> set_ r v
-  Add r v  -> op_ r v (+)
-  Mul r v  -> op_ r v (*)
-  Mod r v  -> op_ r v (flip rem)
-  Jgz v' v -> eval_ v' >>= (\a -> when (a > 0) $ jmp v)
-  Snd r    -> eval_ (Reg r) >>= (\a -> modify $ (out %~ (a Seq.<|)) . (sc %~ (+1)))
-  _ -> return ()
+  Set r v  -> set_ r v >> return False
+  Add r v  -> op_ r v (+) >> return False
+  Mul r v  -> op_ r v (*) >> return False
+  Mod r v  -> op_ r v (flip rem) >> return False
+  Jgz v' v -> eval_ v' >>= (\a -> when (a > 0) $ jmp v) >> return False
+  Snd r    -> eval_ (Reg r) >>= (\a -> modify $ (out %~ (a Seq.<|)) . (sc %~ (+1))) >> return False
+  Rcv r    -> do
+    s <- get
+    if Seq.null (view inp s) then return True
+    else
+      let (inp_ Seq.:|> v) = s ^. inp
+      in set_ r (Const v) >> modify (inp .~ inp_) >> return False
   where
     op_ r v f = eval_ v >>= (\a -> modify $ over env (adj (f a) r))
     jmp v = eval_ v >>= (\a -> modify $ over pc ((fromIntegral a - 1) +))
@@ -127,19 +132,9 @@ interpret p = intpr
       case safeLu (_pc s) p of
         Nothing  -> return ()
         Just c -> do
-          process c
-          s' <- get
-          case c of
-            Rcv r ->
-              if Seq.null (view inp s') then return () else
-              do let (inp_ Seq.:|> v) = s ^. inp
-                 set_ r (Const v)
-                 modify $ inp .~ inp_
-                 modify $ pc %~ (+ 1)
-                 intpr
-            _ -> do
-              modify $ pc %~ (+ 1)
-              intpr
+          blocks <- process c
+          if blocks then return ()
+          else modify (pc %~ (+ 1)) >> intpr
 
 runPrgm :: Program -> St -> Seq.Seq Integer -> Seq.Seq Integer
 runPrgm p s i = let s' = runState (interpret p) (set inp i s)
