@@ -5,6 +5,7 @@ import Data.Void
 import Data.Maybe
 import Control.Monad
 import Control.Monad.State
+import Control.Monad.Trans.State.Plus
 import qualified Data.Sequence as Seq
 import qualified Data.Map.Strict as Map
 
@@ -95,28 +96,28 @@ safeLu i a
   | (i >= 0) && (length a > i) = Just (a !! i)
   | otherwise = Nothing
 
-eval_ :: Var -> State St Val
+eval_ :: Var -> StatePlusT St Identity Val
 eval_ v = case v of
   Const c -> return c
   Reg   r -> (fromMaybe 0 . Map.lookup r . view env) <$> get
 
-set_ :: Reg -> Var -> State St ()
+set_ :: Reg -> Var -> StatePlusT St Identity ()
 set_ r v = eval_ v >>= modify . over env . Map.insert r
 
-process :: Cmd -> State St Bool
+process :: Cmd -> StatePlusT St Identity ()
 process c = case c of
-  Set r v  -> set_ r v >> return False
-  Add r v  -> op_ r v (+) >> return False
-  Mul r v  -> op_ r v (*) >> return False
-  Mod r v  -> op_ r v (flip rem) >> return False
-  Jgz v' v -> eval_ v' >>= (\a -> when (a > 0) $ jmp v) >> return False
-  Snd r    -> eval_ (Reg r) >>= (\a -> modify $ (out %~ (a Seq.<|)) . (sc %~ (+1))) >> return False
+  Set r v  -> set_ r v
+  Add r v  -> op_ r v (+)
+  Mul r v  -> op_ r v (*)
+  Mod r v  -> op_ r v (flip rem)
+  Jgz v' v -> eval_ v' >>= (\a -> when (a > 0) $ jmp v)
+  Snd r    -> eval_ (Reg r) >>= (\a -> modify $ (out %~ (a Seq.<|)) . (sc %~ (+1)))
   Rcv r    -> do
     s <- get
-    if Seq.null (view inp s) then return True
+    if Seq.null (view inp s) then mzero
     else
       let (inp_ Seq.:|> v) = s ^. inp
-      in set_ r (Const v) >> modify (inp .~ inp_) >> return False
+      in set_ r (Const v) >> modify (inp .~ inp_)
   where
     op_ r v f = eval_ v >>= (\a -> modify $ over env (adj (f a) r))
     jmp v = eval_ v >>= (\a -> modify $ over pc ((fromIntegral a - 1) +))
@@ -124,28 +125,27 @@ process c = case c of
       Nothing -> Map.insert k (f' 0) m
       Just _  -> Map.adjust f' k m
 
-interpret :: Program -> State St ()
+interpret :: Program -> StatePlusT St Identity ()
 interpret p = intpr
   where
     intpr = do
       s <- get
       case safeLu (_pc s) p of
-        Nothing  -> return ()
+        Nothing  -> mzero
         Just c -> do
-          blocks <- process c
-          if blocks then return ()
-          else modify (pc %~ (+ 1)) >> intpr
+          process c
+          modify (pc %~ (+ 1)) >> intpr
 
 runPrgm :: Program -> St -> Seq.Seq Integer -> Seq.Seq Integer
-runPrgm p s i = let s' = runState (interpret p) (set inp i s)
+runPrgm p s i = let Identity s' = runStatePlusT (interpret p) (set inp i s)
                 in snd s' ^. out
 
 runPrgms :: Program -> St -> St -> (St, Seq.Seq Integer, St, Seq.Seq Integer)
 runPrgms p s1 s2 = until (\(_, ia, _, ib) -> Seq.null ia && Seq.null ib) run (s1', i1', s2', i2')
   where
     (s1', i1', s2', i2') = run (s1, Seq.empty, s2, Seq.empty)
-    run (sa, ia, sb, ib) = let sa' = runState (interpret p) (sa & inp .~ ia & out .~ Seq.empty)
-                               sb' = runState (interpret p) (sb & inp .~ ib & out .~ Seq.empty)
+    run (sa, ia, sb, ib) = let Identity sa' = runStatePlusT (interpret p) (sa & inp .~ ia & out .~ Seq.empty)
+                               Identity sb' = runStatePlusT (interpret p) (sb & inp .~ ib & out .~ Seq.empty)
                            in (snd sa', sb' ^. (_2 . out), snd sb', sa' ^. (_2 . out))
       
 main :: IO ()
